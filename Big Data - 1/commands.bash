@@ -1,1 +1,0 @@
-/spark/bin/spark-submit /opt/spark-apps/cluster-app.py City "Humidity(%)" "2016-01-01 00:00:00" "2016-12-31 23:59:59"

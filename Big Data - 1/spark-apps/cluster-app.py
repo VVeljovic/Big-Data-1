@@ -1,14 +1,24 @@
-import sys
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, to_timestamp, lit,
-    avg, count, stddev, min, max, variance
-)
+from pyspark.sql.functions import col, to_timestamp, lit, avg, count, stddev,min, max, variance, sum
+import argparse
+import time 
 
-parameter_name = sys.argv[1]
-parameter_name_2 = sys.argv[2]
-start_date = sys.argv[3]
-end_date = sys.argv[4]
+start_time = time.perf_counter()
+
+parser = argparse.ArgumentParser()
+parser.add_argument("group_by_column", help="Column name to group by")
+parser.add_argument("metric_column", help="Column name used for statistical calculations")
+parser.add_argument("sum_column", help="Column name to sum over")
+parser.add_argument("start_date", help="Start date")
+parser.add_argument("end_date", help="End date")
+
+args = parser.parse_args()
+
+group_by_column = args.group_by_column
+metric_column = args.metric_column
+sum_column = args.sum_column
+start_date = args.start_date
+end_date = args.end_date
 
 
 spark = SparkSession.builder \
@@ -19,35 +29,48 @@ spark.sparkContext.setLogLevel("ERROR")
 
 
 df = spark.read \
+    .format("csv") \
     .option("header", "true") \
-    .option("inferSchema", "true") \
-    .csv("hdfs://namenode:9000/input/cleaned_dataset.csv")
+    .load("hdfs://namenode:9000/input/us_accidents_cleaned.csv")
+
+df_filtered = df.filter(
+    (col("Start_Time") >= to_timestamp(lit(start_date))) &
+    (col("End_Time") <= to_timestamp(lit(end_date)))
+).groupBy(group_by_column) \
+ .agg(count("*").alias("broj_nezgoda"))\
+ .coalesce(1).write \
+ .mode("overwrite") \
+ .option("header", "true") \
+ .csv("hdfs://namenode:9000/output/filtered_count_by_parameters")
+
+df_summed = (
+    df.filter(
+        (col("Start_Time") >= start_date) &
+        (col("End_Time") <= end_date)
+    )
+    .groupBy(group_by_column)
+    .agg(sum(col(sum_column)).alias(f"{sum_column}_sum"))
+).coalesce(1).write \
+ .mode("overwrite") \
+ .option("header", "true") \
+ .csv("hdfs://namenode:9000/output/sum_by_parameters")
 
 
-df = df.withColumn(
-    "Start_Time",
-    to_timestamp(col("Start_Time"), "yyyy-MM-dd HH:mm:ss")
-).withColumn(
-    "End_Time",
-    to_timestamp(col("End_Time"), "yyyy-MM-dd HH:mm:ss")
-)
-
-
-df.filter(
-    (col("Start_Time") >= to_timestamp(lit(start_date), "yyyy-MM-dd HH:mm:ss")) &
-    (col("End_Time") <= to_timestamp(lit(end_date), "yyyy-MM-dd HH:mm:ss"))
-).groupBy(parameter_name) \
- .agg(count("*").alias("broj_nezgoda")) \
- .orderBy(col("broj_nezgoda").desc()) \
- .show(20, truncate=False)
-
-
-df.groupBy(parameter_name).agg(
-    min(col(parameter_name_2)).alias(f"{parameter_name_2}_min"),
-    max(col(parameter_name_2)).alias(f"{parameter_name_2}_max"),
-    avg(col(parameter_name_2)).alias(f"{parameter_name_2}_avg"),
-    stddev(col(parameter_name_2)).alias(f"{parameter_name_2}_stddev"),
-    variance(col(parameter_name_2)).alias(f"{parameter_name_2}_variance")
-).show(20, truncate=False)
+df = df.groupBy(group_by_column).agg(
+    min(col(metric_column)).alias(f"{metric_column}_min"),
+    max(col(metric_column)).alias(f"{metric_column}_max"),
+    avg(col(metric_column)).alias(f"{metric_column}_avg"),
+    stddev(col(metric_column)).alias(f"{metric_column}_stddev"),
+    variance(col(metric_column)).alias(f"{metric_column}_variance")
+).coalesce(1).write \
+ .mode("overwrite") \
+ .option("header", "true") \
+ .csv("hdfs://namenode:9000/output/grouped_stats")
 
 spark.stop()
+
+end_time = time.perf_counter()
+
+elapsed_time = end_time - start_time
+
+print(f"Elapsed time: {elapsed_time:.4f} seconds")
